@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "id": "dzdebug",
+  "version": "${version}",
+  "name": "Denizen Debug Viewer",
+  "description": "Captures Denizen script errors sent by the server and shows them in a console instead of chat.",
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["dev.dzdebug.DzDebugClient"],
+    "modmenu": ["dev.dzdebug.ModMenuIntegration"]
+  },
+  "depends": {
+    "fabricloader": ">=0.19.5",
+    "minecraft": "~26.3",
+    "java": ">=25",
+    "fabric-api": "*"
+  },
+  "suggests": {
+    "modmenu": "*"
+  }
+}
