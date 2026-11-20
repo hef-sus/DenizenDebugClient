@@ -3,6 +3,11 @@
 A client-side Fabric mod that shows **Denizen script errors from your server in-game**, so you don't have to
 watch the server console while you work on scripts.
 
+<img width="1366" height="701" alt="image" src="https://github.com/user-attachments/assets/5b931562-1eef-447d-92e9-e0d063fc82c8" />
+<img width="1366" height="705" alt="image" src="https://github.com/user-attachments/assets/8eaa511c-c4c4-407b-a094-1c7cc3eaf03b" />
+<img width="1363" height="690" alt="image" src="https://github.com/user-attachments/assets/8d227491-a6af-41e1-a0be-b52cd5084450" />
+
+
 ## Features
 
 - **Error box**: a chat-style box in the bottom-right corner that lists the latest errors (newest at the bottom).
