@@ -31,7 +31,7 @@ ErrorHandle:
     - define channel dzdebug:unseen
     - define buf <invoke[io.netty.buffer.Unpooled.buffer()]>
     - define fb <invoke[new net.minecraft.network.FriendlyByteBuf(buf)]>
-    - define errorlist <server.flag[ErrorHandle.errors].reverse.filter[get[unseen].contains[<player.name>]]||<list>>
+    - define errorlist <server.flag[ErrorHandle.errors].filter[get[unseen].contains[<player.name>]]||<list>>
     - define esize <[errorlist].size||0>
     - invoke fb.writeBoolean(true)
     - invoke fb.writeVarInt(<[esize]>)
