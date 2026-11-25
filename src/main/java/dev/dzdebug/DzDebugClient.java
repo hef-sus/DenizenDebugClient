@@ -72,7 +72,7 @@ public class DzDebugClient implements ClientModInitializer {
         // Chat fallback path: capture marked messages and hide them (nothing is printed to chat).
         ClientReceiveMessageEvents.ALLOW_GAME.register((message, overlay) -> overlay || !handleChat(message));
 
-        // ---- HUD box (top-left) + click on it while chat is open ----
+        // ---- error box (bottom-right, chat-like) + click / scroll it while chat is open ----
         HudElementRegistry.attachElementAfter(VanillaHudElements.CHAT,
                 Identifier.fromNamespaceAndPath(MOD_ID, "error_box"), ErrorHud::render);
 
@@ -85,6 +85,9 @@ public class DzDebugClient implements ClientModInitializer {
                     }
                     return true;
                 });
+                // wheel over the error panel scrolls it (like chat); return false to cancel the vanilla handling
+                ScreenMouseEvents.allowMouseScroll(screen).register((s, mouseX, mouseY, horizontal, vertical) ->
+                        !ErrorHud.scroll(mouseX, mouseY, vertical));
             }
         });
 

@@ -8,26 +8,45 @@ import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.screens.ChatScreen;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.MutableComponent;
+import net.minecraft.util.FormattedCharSequence;
+import net.minecraft.util.Mth;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /**
- * A chat-sized box in the bottom-right corner that lists the latest errors (newest at the bottom, like chat).
- * Unfocused: ~90 px high, shown for 10 s after an error and then fades out (a small badge stays while errors are unread).
- * While the chat is open (T): full 180 px height with a header; click it to open the console.
+ * Error box in the bottom-right corner that behaves like the vanilla chat:
+ *  - errors are word-wrapped over as many lines as they need (nothing is cut off), newest at the bottom,
+ *  - while the chat is closed only recent lines show (10 s, each line fades out on its own),
+ *  - while the chat is open (T) the whole history shows in a 180 px panel, scrollable with the mouse wheel;
+ *    click the panel to open the console,
+ *  - F3+D clears it (see ChatClearMixin / LogStore.clearBox()).
  */
 final class ErrorHud {
     private static final long SHOW_MS = 10_000;
-    private static final long FADE_IN_MS = 250;
-    private static final long FADE_OUT_MS = 600;
+    private static final long LINE_IN_MS = 250;
     private static final int LINE_H = 10;
+    private static final int MAX_UNFOCUSED_LINES = 9;
+    private static final int PAD = 6;
 
+    private record HLine(FormattedCharSequence text, long time, boolean first) {}
+
+    // layout cache
+    private static List<HLine> lines = List.of();
+    private static int layoutVersion = -1;
+    private static int layoutW = -1;
+
+    // chat-like scrolling (lines from the bottom), only while the chat is open
+    private static int scrollLines = 0;
+    private static int maxScroll = 0;
+
+    // hit rect (chat open only)
     private static boolean visible;
     private static int bx, by, bw, bh;
 
-    // animation state: 0 hidden, 1 badge, 2 box
-    private static int mode = 0;
-    private static long shownSince = 0;
+    private static boolean wasChat = false;
+    private static long chatSince = 0;
 
     private ErrorHud() {}
 
@@ -35,131 +54,185 @@ final class ErrorHud {
         return visible && x >= bx && x < bx + bw && y >= by && y < by + bh;
     }
 
+    /** Mouse wheel over the panel scrolls it. @return true if the event was consumed. */
+    static boolean scroll(double x, double y, double amount) {
+        if (!hit(x, y)) return false;
+        scrollLines = Mth.clamp(scrollLines + (amount > 0 ? 3 : -3), 0, maxScroll);
+        return true;
+    }
+
     private static int alpha(int argb, float p) {
         int a = (int) (((argb >>> 24) & 0xFF) * p);
         return (a << 24) | (argb & 0xFFFFFF);
     }
 
+    // ------------------------------------------------------------------ layout
+
+    private static void ensureLayout(Font font, int textW) {
+        long cleared = LogStore.boxClearedAt();
+        if (layoutVersion == LogStore.version() && layoutW == textW) return;
+
+        List<LogStore.Row> live = LogStore.live();
+        List<LogStore.Row> tail = new ArrayList<>();
+        for (int i = Math.max(0, live.size() - 120); i < live.size(); i++) {
+            LogStore.Row r = live.get(i);
+            if (r.time > cleared) tail.add(r);
+        }
+        List<LogStore.Row> rows = LogStore.dedup(tail);
+
+        List<HLine> out = new ArrayList<>();
+        for (LogStore.Row r : rows) {
+            String[] paras = r.message.split("\\R", -1);
+            MutableComponent head = Component.literal("[" + r.timeText() + "] ").withStyle(ChatFormatting.GRAY)
+                    .append(Component.literal(r.script + ":" + r.line).withStyle(ChatFormatting.RED, ChatFormatting.BOLD));
+            if (r.count > 1) {
+                head.append(Component.literal(" (" + r.count + ")").withStyle(ChatFormatting.YELLOW));
+            }
+            head.append(Component.literal("  " + paras[0]).withStyle(ChatFormatting.WHITE));
+
+            boolean first = true;
+            for (FormattedCharSequence s : font.split(head, textW)) {
+                out.add(new HLine(s, r.time, first));
+                first = false;
+            }
+            for (int i = 1; i < paras.length; i++) {
+                for (FormattedCharSequence s : font.split(
+                        Component.literal("    " + paras[i]).withStyle(ChatFormatting.WHITE), textW)) {
+                    out.add(new HLine(s, r.time, false));
+                }
+            }
+        }
+
+        // keep the view anchored if the user scrolled up while new lines arrive (like chat)
+        if (scrollLines > 0 && out.size() > lines.size()) {
+            scrollLines += out.size() - lines.size();
+        }
+        lines = out;
+        layoutVersion = LogStore.version();
+        layoutW = textW;
+    }
+
+    // ------------------------------------------------------------------ render
+
     static void render(GuiGraphicsExtractor g, DeltaTracker delta) {
         visible = false;
         Minecraft mc = Minecraft.getInstance();
         Screen screen = mc.gui.screen();
-        List<LogStore.Row> live = LogStore.live();
-        if (live.isEmpty() || screen instanceof ConsoleScreen) {
-            mode = 0;
+        if (screen instanceof ConsoleScreen) {
+            wasChat = false;
             return;
         }
 
         boolean chatOpen = screen instanceof ChatScreen;
-        long now = System.currentTimeMillis();
-        long age = now - LogStore.lastAt();
-
-        int newMode;
-        if (chatOpen) {
-            newMode = 2;
-        } else if (LogStore.unread() > 0) {
-            newMode = age < SHOW_MS ? 2 : 1;
-        } else {
-            newMode = 0;
-        }
-        if (newMode == 0) {
-            mode = 0;
-            return;
-        }
-        if (newMode != mode) shownSince = now;
-        mode = newMode;
-
-        float t = Math.min(1f, (now - shownSince) / (float) FADE_IN_MS);
-        float in = 1f - (1f - t) * (1f - t) * (1f - t);                       // ease-out cubic
-        float out = 1f;
-        if (newMode == 2 && !chatOpen && age > SHOW_MS - FADE_OUT_MS) {       // fade out like chat
-            out = Math.max(0f, 1f - (age - (SHOW_MS - FADE_OUT_MS)) / (float) FADE_OUT_MS);
-        }
-        float p = in * out;
-        int slide = Math.round((1f - in) * 12);                               // slides in from the right
-        boolean text = p >= 0.08f;                                            // very low alpha text would render opaque
+        if (!chatOpen) scrollLines = 0; // like chat: scroll resets when it closes
 
         Font font = mc.font;
         int sw = mc.getWindow().getGuiScaledWidth();
         int sh = mc.getWindow().getGuiScaledHeight();
-        int bottom = sh - 40;                                                  // where the vanilla chat ends
+        int bottom = sh - 40;                                              // where the vanilla chat ends
         int w = Math.max(180, Math.min(320, (int) (sw * 0.45f)));
         int x = sw - 4 - w;
+        long now = System.currentTimeMillis();
 
-        if (newMode == 1) {
-            String s = "\u26a0 " + LogStore.unread();
-            int bwid = font.width(s) + 14;
-            int bxx = sw - 4 - bwid;
-            int byy = bottom - 16;
-            set(bxx, byy, bwid, 16);
-            Ui.roundRect(g, bxx + slide, byy, bxx + slide + bwid, byy + 16, 4, alpha(0xEE111114, p));
-            g.fill(bxx + bwid + slide - 2, byy + 3, bxx + bwid + slide, byy + 13, alpha(Ui.RED, p));
-            if (text) g.text(font, s, bxx + 7 + slide, byy + 4, alpha(Ui.RED_SOFT, p), false);
-            return;
+        ensureLayout(font, w - 2 * PAD - 6);
+        if (!chatOpen) {
+            wasChat = false;
+        } else if (!wasChat) {
+            wasChat = true;
+            chatSince = now;
         }
+        if (lines.isEmpty()) return;
 
-        int h = Math.min(chatOpen ? 180 : 90, sh / 2);
-        int y = bottom - h;
-        set(x, y, w, h);
-        int ox = x + slide;
-
-        Ui.roundRect(g, ox, y, ox + w, y + h, 4, alpha(0xD0101014, p));
-        g.fill(ox + w - 2, y + 4, ox + w, y + h - 4, alpha(Ui.RED, p));
-
-        int areaTop = y + 4;
         if (chatOpen) {
-            if (text) {
-                g.text(font, Component.literal("Denizen errors").withStyle(ChatFormatting.BOLD),
-                        ox + 8, y + 5, alpha(Ui.RED_SOFT, p), false);
-                String hint = "Click to open console  \u00b7  F4";
-                g.text(font, hint, ox + w - 10 - font.width(hint), y + 5, alpha(Ui.MUTED, p), false);
-            }
-            g.fill(ox + 6, y + 16, ox + w - 8, y + 17, alpha(Ui.DIVIDER, p));
-            areaTop = y + 20;
-        }
-        int areaBottom = y + h - 4;
-        int maxLines = Math.max(1, (areaBottom - areaTop) / LINE_H);
-
-        // newest at the bottom, like chat; identical errors are merged into one line with (n)
-        List<LogStore.Row> tail = live.size() > 80 ? live.subList(live.size() - 80, live.size()) : live;
-        List<LogStore.Row> rows = LogStore.dedup(tail);
-        int n = Math.min(maxLines, rows.size());
-
-        for (int i = 0; i < n; i++) {
-            LogStore.Row r = rows.get(rows.size() - n + i);
-            int ly = areaBottom - (n - i) * LINE_H + 1;
-            if (!text) continue;
-
-            int cx = ox + 8;
-            int right = ox + w - 8;
-
-            String time = r.timeText();
-            g.text(font, time, cx, ly, alpha(Ui.MUTED, p), false);
-            cx += font.width(time) + 5;
-
-            String head = Ui.fit(font, r.script + ":" + r.line, Math.max(30, (right - cx) / 2));
-            g.text(font, head, cx, ly, alpha(Ui.RED, p), false);
-            cx += font.width(head);
-
-            if (r.count > 1) {
-                String c = " (" + r.count + ")";
-                g.text(font, c, cx, ly, alpha(0xFFE0B341, p), false);
-                cx += font.width(c);
-            }
-
-            cx += 6;
-            if (right - cx > 20) {
-                String msg = Ui.fit(font, r.message.split("\\R", 2)[0], right - cx);
-                g.text(font, msg, cx, ly, alpha(Ui.TEXT, p), false);
-            }
+            LogStore.markRead();
+            drawFocused(g, font, now, x, bottom, w, sh);
+        } else {
+            drawRecent(g, font, now, x, bottom, w, sw);
         }
     }
 
-    private static void set(int x, int y, int w, int h) {
+    /** Chat closed: only lines younger than 10 s, each fading out on its own and sliding in when new. */
+    private static void drawRecent(GuiGraphicsExtractor g, Font font, long now, int x, int bottom, int w, int sw) {
+        List<HLine> vis = new ArrayList<>();
+        for (int i = lines.size() - 1; i >= 0 && vis.size() < MAX_UNFOCUSED_LINES; i--) {
+            HLine l = lines.get(i);
+            if (now - l.time() >= SHOW_MS) break; // lines are ordered oldest -> newest
+            vis.add(l);
+        }
+
+        if (vis.isEmpty()) {
+            if (LogStore.unread() > 0) drawBadge(g, font, bottom, sw);
+            return;
+        }
+        for (int k = 0; k < vis.size(); k++) {
+            HLine l = vis.get(k);
+            long age = now - l.time();
+
+            float f = Mth.clamp((1f - age / (float) SHOW_MS) * 10f, 0f, 1f); // vanilla chat fade-out curve
+            f *= f;
+            float t = Math.min(1f, age / (float) LINE_IN_MS);
+            float in = 1f - (1f - t) * (1f - t) * (1f - t);                   // ease-out cubic fade/slide in
+            float p = f * in;
+            if (p < 0.08f) continue; // very low alpha text would render opaque
+
+            drawLine(g, font, l, x + Math.round((1f - in) * 12), bottom - (k + 1) * LINE_H, w, p);
+        }
+    }
+
+    /** Chat open: full history in a panel, scrollable; click to open the console. */
+    private static void drawFocused(GuiGraphicsExtractor g, Font font, long now, int x, int bottom, int w, int sh) {
+        int h = Math.min(180, sh / 2);
+        int y = bottom - h;
         visible = true;
         bx = x;
         by = y;
         bw = w;
         bh = h;
+
+        float t = Math.min(1f, (now - chatSince) / 150f);
+        float p = 1f - (1f - t) * (1f - t) * (1f - t);
+
+        Ui.roundRect(g, x, y, x + w, y + h, 4, alpha(0x70101014, p));
+        if (p >= 0.08f) {
+            g.text(font, Component.literal("Denizen errors").withStyle(ChatFormatting.BOLD),
+                    x + PAD + 2, y + 4, alpha(Ui.RED_SOFT, p), false);
+            String hint = "Click to open console  \u00b7  F4";
+            g.text(font, hint, x + w - PAD - font.width(hint), y + 4, alpha(Ui.MUTED, p), false);
+        }
+        g.fill(x + 4, y + 15, x + w - 4, y + 16, alpha(Ui.DIVIDER, p));
+
+        int areaTop = y + 18;
+        int areaBottom = y + h - 3;
+        int maxLines = Math.max(1, (areaBottom - areaTop) / LINE_H);
+        maxScroll = Math.max(0, lines.size() - maxLines);
+        scrollLines = Mth.clamp(scrollLines, 0, maxScroll);
+
+        for (int k = 0; k < maxLines; k++) {
+            int idx = lines.size() - 1 - scrollLines - k;
+            if (idx < 0) break;
+            drawLine(g, font, lines.get(idx), x, areaBottom - (k + 1) * LINE_H, w - 6, p);
+        }
+        if (maxScroll > 0) {
+            Ui.scrollbar(g, x + w - 6, areaTop, areaBottom, lines.size(), maxLines, maxScroll - scrollLines);
+        }
+    }
+
+    private static void drawLine(GuiGraphicsExtractor g, Font font, HLine l, int x, int y, int w, float p) {
+        g.fill(x, y, x + w, y + LINE_H, alpha(0xB00E0E12, p));
+        if (l.first()) {
+            g.fill(x, y, x + 2, y + LINE_H, alpha(Ui.RED, p));
+        }
+        g.text(font, l.text(), x + PAD, y + 1, alpha(0xFFFFFFFF, p), false);
+    }
+
+    /** Small marker that stays after the lines have faded while errors are still unread. */
+    private static void drawBadge(GuiGraphicsExtractor g, Font font, int bottom, int sw) {
+        String s = "\u26a0 " + LogStore.unread();
+        int bwid = font.width(s) + 14;
+        int x = sw - 4 - bwid;
+        int y = bottom - 16;
+        Ui.roundRect(g, x, y, x + bwid, y + 16, 4, 0xEE111114);
+        g.fill(x + bwid - 2, y + 3, x + bwid, y + 13, Ui.RED);
+        g.text(font, s, x + 7, y + 4, Ui.RED_SOFT, false);
     }
 }

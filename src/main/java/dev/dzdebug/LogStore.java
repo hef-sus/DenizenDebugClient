@@ -142,6 +142,19 @@ public final class LogStore {
     public static Row last() { return last; }
     public static void markRead() { unread = 0; }
 
+    // ------------------------------------------------------------ chat-style box history (cleared by F3+D)
+
+    private static long boxClearedAt = 0;
+
+    /** Clears only the on-screen error box (like F3+D clears chat); the console keeps its full log. */
+    public static void clearBox() {
+        boxClearedAt = System.currentTimeMillis();
+        unread = 0;
+        version++;
+    }
+
+    public static long boxClearedAt() { return boxClearedAt; }
+
     // ------------------------------------------------------------ file log
 
     /** @return true if the error is "new" (not seen within the last minute); only new ones are written to the file. */

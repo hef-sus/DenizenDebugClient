@@ -6,6 +6,7 @@
   "description": "Captures Denizen script errors sent by the server and shows them in a console instead of chat.",
   "license": "MIT",
   "environment": "client",
+  "mixins": ["dzdebug.mixins.json"],
   "entrypoints": {
     "client": ["dev.dzdebug.DzDebugClient"],
     "modmenu": ["dev.dzdebug.ModMenuIntegration"]

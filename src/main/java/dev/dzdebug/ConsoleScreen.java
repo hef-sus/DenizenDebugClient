@@ -1,8 +1,6 @@
 package dev.dzdebug;
 
-import net.minecraft.client.gui.screens.ConfirmLinkScreen;
 import net.minecraft.ChatFormatting;
-import net.minecraft.util.Util;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.client.gui.components.Button;
@@ -12,7 +10,6 @@ import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.util.FormattedCharSequence;
 import net.minecraft.util.Mth;
 
-import java.net.URI;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -302,7 +299,12 @@ public class ConsoleScreen extends Screen {
         String url = LogStore.logUrl();
         if (url == null) return;
         this.minecraft.keyboardHandler.setClipboard(url); // also copy, in case the browser doesn't open
-ConfirmLinkScreen.confirmLinkNow(this, URI.create(url));        flash("openlog");
+        try {
+            Browser.open(url);
+        } catch (RuntimeException ignored) {
+            // bad link: the copy above still works
+        }
+        flash("openlog");
     }
 
     private void runCommand(String cmd) {
